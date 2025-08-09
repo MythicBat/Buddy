@@ -79,3 +79,17 @@ class DB:
             """, (learner_id, skill_id, status, streak, int(time=time()))
         )
         self.conn.commit()
+    
+    def skill_exists(self, subject, topic, subtopic):
+        cur = self.conn.execute(
+            "SELECT 1 FROM skills WHERE subject=? AND topic=? AND subtopic=?",
+            (subject, topic, subtopic)
+        )
+        return cur.fetchone() is not None
+    
+    def insert_skill(self, subject, topic, subtopic):
+        self.conn.execute(
+            "INSERT INTO skills(subject, topic, subtopic) VALUES(?,?,?)",
+            (subject, topic, subtopic)
+        )
+        self.conn.commit()
