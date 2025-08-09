@@ -1,0 +1,9 @@
+{
+    "subject": "Math",
+    "version": "v1",
+    "skills": [
+        {"topic": "Arithmetic", "subtopic": "Add 1-digit numbers"},
+        {"topic": "Arithmetic", "subtopic": "Subtract 1-digit numbers"},
+        {"topic": "Place Value", "subtopic": "Tens and Ones"}
+    ]
+}
