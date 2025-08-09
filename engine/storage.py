@@ -39,3 +39,43 @@ class DB:
         )
         self.conn.commit()
         return self.conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    
+    def skills_for(self, subject):
+        cur = self.conn.execute(
+            "SELECT id, topic, subtopic FROM skills WHERE subject=?", (subject,)
+        )
+        rows = cur.fetchall()
+        if not rows:
+            seed = [
+                ("Math", "Arithmetic", "Add 1-digit numbers"),
+                ("Science", "Matter", "Solid vs Liquid"),
+                ("Literacy", "Reading", "Short vowel sounds")
+            ]
+            for s in seed:
+                self.conn.execute(
+                    "INSERT INTO skills(subject, topic, subtopic) VALUES(?,?,?)", s
+                )
+            self.conn.commit()
+            return self.skills_for(subject)
+        return [{"id":r[0], "topic":r[1], "subtopic":r[2]} for r in rows]
+    
+    def bump_progress(self, learner_id, skill_id, correct):
+        cur = self.conn.execute(
+            "SELECT status, streak_correct FROM progress WHERE learner_id=? AND skill_id=?",
+            (learner_id, skill_id)
+        )
+        row = cur.fetchone()
+        status, streak = (row if row else ("Learning", 0))
+        streak = (streak + 1) if correct else 0
+        if streak >= 3: status = "Practicing"
+        self.conn.execute(
+            """
+            INSERT INTO progress(learner_id, skill_id, status, streak_correct, last_seen)
+            VALUES(?,?,?,?)
+            ON CONFLICT(learner_id, skill_id) DO UPDATE SET
+                status=excluded.status,
+                streak_correct=excluded.streak_correct,
+                last_seen=excluded.last_seen
+            """, (learner_id, skill_id, status, streak, int(time=time()))
+        )
+        self.conn.commit()
