@@ -1,5 +1,8 @@
+# app/app.py
+
+# --- ensure Python can see the sibling `engine/` package ---
 from pathlib import Path
-import sys, os, tempfile, json, time
+import sys, os, tempfile, json, time, math, random
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -76,8 +79,68 @@ def start_session(name, subject, level):
     st.session_state.diag_score = 0
     st.session_state.diag_q_text = gen_diag_question(subject, level, st.session_state.lang)
 
+# ---- Skill Memory Map helpers (DOT graph) ----
+def get_status_for_skill(learner_id, skill_id):
+    cur = db.conn.execute(
+        "SELECT status FROM progress WHERE learner_id=? AND skill_id=?",
+        (learner_id, skill_id)
+    ).fetchone()
+    return cur[0] if cur else "Unseen"
+
+def skill_color(status):
+    return {
+        "Practicing": "#F6C453",  # amber
+        "Learning":   "#60A5FA",  # blue
+        "Unseen":     "#9CA3AF",  # gray
+    }.get(status, "#22C55E")      # default green for mastered-ish
+
+def build_skill_graph_dot(learner_id, subject):
+    skills = db.list_skills(subject)  # [{id,topic,subtopic}]
+    # group by topic
+    by_topic = {}
+    for s in skills:
+        by_topic.setdefault(s["topic"], []).append(s)
+    # deterministic order
+    for t in by_topic:
+        by_topic[t] = sorted(by_topic[t], key=lambda x: x["subtopic"].lower())
+
+    lines = [
+        'digraph G {',
+        'rankdir=LR;',
+        'node [shape=box, style="rounded,filled", fontname="Verdana", fontsize=10];',
+        'edge [color="#94a3b8"];'
+    ]
+    # clusters per topic
+    cluster_idx = 0
+    last_node = None
+    first_nodes = []
+
+    for topic, items in sorted(by_topic.items()):
+        lines.append(f'subgraph cluster_{cluster_idx} {{ label="{topic}"; color="#e5e7eb"; fontsize=12;')
+        prev = None
+        for s in items:
+            status = get_status_for_skill(learner_id, s["id"])
+            color = skill_color(status)
+            node_id = f'n{s["id"]}'
+            label = s["subtopic"].replace('"', '\\"')
+            lines.append(f'{node_id} [label="{label}", fillcolor="{color}"];')
+            if prev:
+                lines.append(f'{prev} -> {node_id};')
+            prev = node_id
+        if items:
+            first_nodes.append(f'n{items[0]["id"]}')
+        lines.append('}')
+        cluster_idx += 1
+
+    # light cross-links between topics to show a path
+    for i in range(len(first_nodes) - 1):
+        lines.append(f'{first_nodes[i]} -> {first_nodes[i+1]} [style=dashed, color="#cbd5e1"];')
+
+    lines.append('}')
+    return "\n".join(lines)
+
 # ---------------- TABS ----------------
-tab_learn, tab_progress, tab_teacher = st.tabs(["📘 Learn", "🎖️ Progress", "🧑‍🏫 Teacher"])
+tab_learn, tab_progress, tab_teacher, tab_game = st.tabs(["📘 Learn", "🎖️ Progress", "🧑‍🏫 Teacher", "🕹️ Game"])
 
 # ======== LEARN TAB ========
 with tab_learn:
@@ -240,6 +303,12 @@ with tab_progress:
             for b in stats["badges"]:
                 st.markdown(f"- **{b['name']}** — {b['desc']}")
 
+        st.markdown("---")
+        st.subheader("🧠 Skill Memory Map")
+        st.caption("Shows topics (clusters) and subtopics (nodes). Color = status.")
+        dot = build_skill_graph_dot(st.session_state.learner, st.session_state.subject)
+        st.graphviz_chart(dot, use_container_width=True)
+
 # ======== TEACHER TAB ========
 with tab_teacher:
     st.subheader("Manage skills & content packs")
@@ -281,3 +350,110 @@ with tab_teacher:
             file_name=f"{manage_subject.lower()}_pack.json",
             mime="application/json"
         )
+
+# ======== GAME TAB (Buddy Challenge) ========
+with tab_game:
+    st.subheader("🕹️ Buddy Challenge — Timed Quiz Mode")
+    if "learner" not in st.session_state:
+        st.info("Start a session in the Learn tab first (see Learn tab).")
+        st.stop()
+
+    st.write("Answer as many as you can before time runs out. Earn XP and badges!")
+
+    # Game state
+    st.session_state.setdefault("game_running", False)
+    st.session_state.setdefault("game_started_at", 0.0)
+    st.session_state.setdefault("game_duration", 60)  # seconds
+    st.session_state.setdefault("game_score", 0)
+    st.session_state.setdefault("game_xp", 0)
+    st.session_state.setdefault("game_question", "")
+    st.session_state.setdefault("game_skill", None)
+
+    def new_game_question():
+        skill = pick_next_skill(db, st.session_state.learner, st.session_state.subject)
+        prompt = (
+            f"You are Buddy, the quizmaster for {st.session_state.subject}. "
+            f"Give ONE {st.session_state.level} level question for subtopic '{skill['subtopic']}'. "
+            f"Keep it short; do not include the answer."
+        )
+        q = ask_llm(prompt).strip()
+        st.session_state.game_question = q
+        st.session_state.game_skill = skill
+
+    # Controls
+    c1,c2,c3 = st.columns([1,1,2])
+    with c1:
+        dur = st.number_input("Duration (sec)", min_value=30, max_value=300, step=30,
+                              value=st.session_state.game_duration)
+        st.session_state.game_duration = int(dur)
+    with c2:
+        if not st.session_state.game_running:
+            if st.button("▶️ Start"):
+                st.session_state.game_running = True
+                st.session_state.game_started_at = time.time()
+                st.session_state.game_score = 0
+                st.session_state.game_xp = 0
+                new_game_question()
+                st.experimental_rerun()
+        else:
+            if st.button("⏹️ Stop"):
+                st.session_state.game_running = False
+
+    # Timer + Question
+    if st.session_state.game_running:
+        remaining = max(0, st.session_state.game_duration - int(time.time() - st.session_state.game_started_at))
+        st.markdown(f"### ⏱️ Time left: **{remaining}s** | Score: **{st.session_state.game_score}** | XP: **{st.session_state.game_xp}**")
+        st.write(f"**Question:** {st.session_state.game_question}")
+
+        # optional voice answer
+        use_voice = st.toggle("🎤 Voice answer", value=False, key="game_voice")
+        if use_voice:
+            audio = mic_recorder(start_prompt="🎙️ Record answer", stop_prompt="⏹️ Stop", just_once=True, key="game_mic")
+            if audio and audio.get("bytes"):
+                with tempfile.TemporaryDirectory() as td:
+                    rec_path = os.path.join(td, "user.wav")
+                    with open(rec_path, "wb") as f:
+                        f.write(audio["bytes"])
+                    transcript = stt_transcribe_wav(rec_path, st.session_state.vosk_path)
+                    st.session_state["game_prefill"] = transcript
+                    st.info(f"Transcribed: **{transcript}**")
+
+        prefill = st.session_state.pop("game_prefill", "") if "game_prefill" in st.session_state else ""
+        with st.form("game_answer"):
+            ans = st.text_input("Your answer", value=prefill)
+            go = st.form_submit_button("Submit")
+        if go and ans.strip():
+            ok, msg = check_user_input(ans)
+            if not ok:
+                st.warning(msg)
+                st.stop()
+            # Quick eval (no follow-up; keep speed)
+            res = eval_answer(st.session_state.game_question, ans, st.session_state.level, st.session_state.lang)
+            correct = bool(res["correct"])
+            st.markdown(res["feedback"])
+
+            # score logic
+            if correct:
+                st.session_state.game_score += 1
+                st.session_state.game_xp += 10
+            else:
+                st.session_state.game_xp = max(0, st.session_state.game_xp - 3)
+
+            # update course progress too
+            if st.session_state.game_skill:
+                update_progress(db, st.session_state.learner, st.session_state.game_skill, correct)
+
+            # next question or time over
+            if time.time() - st.session_state.game_started_at < st.session_state.game_duration:
+                new_game_question()
+            st.experimental_rerun()
+
+        # auto-stop when time is up
+        if remaining <= 0:
+            st.session_state.game_running = False
+            st.success(f"Time! Final Score: {st.session_state.game_score} | XP: {st.session_state.game_xp}")
+
+    else:
+        if st.session_state.game_score > 0:
+            st.success(f"Last run — Score: {st.session_state.game_score} | XP: {st.session_state.game_xp}")
+        st.caption("Tip: Use shorter durations (60–90s) for a punchy demo.")
