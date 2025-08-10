@@ -9,6 +9,8 @@ from engine.storage import DB
 from engine.adapt import pick_next_skill, update_progress
 from engine.curriculum import load_pack, merge_pack_into_db
 from engine.safety import check_user_input
+from engine.audio import tts_save_wav, stt_transcribe_wav
+import tempfile, os
 
 # ---------------- UI SETUP ----------------
 st.set_page_config(page_title="Buddy", page_icon="🎒", layout="centered")
@@ -22,6 +24,8 @@ with st.sidebar:
     st.header("Settings")
     st.session_state.setdefault("lang", "English")
     st.session_state.lang = st.selectbox("Language", ["English"], index=0)
+
+    st.session_state.setdefault("vosk_path", "models/vosk-model-small-en-us-0.15")
 
     st.markdown("---")
     up = st.file_uploader("Import curriculum pack (.json)", type=["json"])
@@ -37,26 +41,25 @@ with st.sidebar:
 def gen_diag_question(subject, level, lang):
     j = ask_llm_json(
         system_goal="Create ONE short diagnostic question.",
-        user_task=f"Subject: {subject}. Level: {level}. Language: {lang}. Keep it concise and objective.",
+        user_task=f"Subject: {subject}. Level: {level}. Language: {lang}. Keep it concise.",
         schema_hint='{"question": "string"}'
     )
     return j.get("question", "What is 2 + 3?")
 
 def eval_answer(question, student_answer, level, lang):
     j = ask_llm_json(
-        system_goal="Judge answer; give step-by-step feedback; return a follow-up question.",
+        system_goal="Judge answer; give feedback; return a follow-up.",
         user_task=(
             f"Question: {question}\n"
-            f"Student answer: {student_answer}\n"
+            f"Student: {student_answer}\n"
             f"Level: {level}\nLanguage: {lang}\n"
             "Be strict but kind. Keep feedback short."
         ),
         schema_hint='{"correct": true/false, "feedback": "string", "next_question": "string"}'
     )
-    # minimal fallbacks
     if "correct" not in j:
         j["correct"] = "correct" in str(j).lower()
-    j.setdefault("feedback", "Thanks! Here is some feedback and a small hint.")
+    j.setdefault("feedback", "Thanks! Here is some feedback.")
     j.setdefault("next_question", "Try 4 + 3 = ?")
     return j
 
@@ -73,7 +76,9 @@ def start_session(name, subject, level):
 tab_learn, tab_progress = st.tabs(["📘 Learn", "🎖️ Progress"])
 
 with tab_learn:
-    # ----- Setup form (if needed) -----
+    voice_mode = st.toggle("🎤 Voice mode (offline)", value=False)
+
+    # ----- Setup form -----
     if "learner" not in st.session_state:
         with st.form("setup"):
             name = st.text_input("Your name")
@@ -85,13 +90,29 @@ with tab_learn:
             st.rerun()
         st.stop()
 
-    # ----- Diagnostic flow -----
+    # ----- Diagnostic -----
     if st.session_state.mode == "diagnostic":
         st.info("Quick check: 3 short questions to set your starting level.")
         st.write(f"**Q{st.session_state.diag_q + 1}:** {st.session_state.diag_q_text}")
 
+        if voice_mode:
+            if st.button("🔊 Speak the question"):
+                with tempfile.TemporaryDirectory() as td:
+                    out_wav = os.path.join(td, "buddy_says.wav")
+                    tts_save_wav(st.session_state.diag_q_text, out_wav)
+                    st.audio(open(out_wav, "rb").read(), format="audio/wav")
+            mic_wav = st.file_uploader("🎙️ Speak your answer (WAV 16k mono)", type=["wav"])
+            if mic_wav is not None:
+                with tempfile.TemporaryDirectory() as td:
+                    rec_path = os.path.join(td, "user.wav")
+                    with open(rec_path, "wb") as f:
+                        f.write(mic_wav.read())
+                    transcript = stt_transcribe_wav(rec_path, st.session_state.vosk_path)
+                    st.session_state["prefill_answer"] = transcript
+
+        default_ans = st.session_state.pop("prefill_answer", "") if "prefill_answer" in st.session_state else ""
         with st.form("diag"):
-            ans = st.text_input("Your answer")
+            ans = st.text_input("Your answer", value=default_ans)
             go = st.form_submit_button("Submit")
         if go and ans.strip():
             ok, msg = check_user_input(ans)
@@ -120,7 +141,7 @@ with tab_learn:
                 st.session_state.diag_q_text = res["next_question"]
             st.rerun()
 
-    # ----- Lesson loop -----
+    # ----- Lesson -----
     if st.session_state.mode == "lesson":
         skill = pick_next_skill(db, st.session_state.learner, st.session_state.subject)
         st.subheader(f"{st.session_state.subject}: {skill['topic']} → {skill['subtopic']}")
@@ -133,10 +154,29 @@ with tab_learn:
             )
             st.session_state.turn = ask_llm(prompt)
 
+        if voice_mode:
+            colA, colB = st.columns(2)
+            with colA:
+                if st.button("🔊 Speak the question"):
+                    with tempfile.TemporaryDirectory() as td:
+                        out_wav = os.path.join(td, "buddy_says.wav")
+                        tts_save_wav(st.session_state.turn, out_wav)
+                        st.audio(open(out_wav, "rb").read(), format="audio/wav")
+            with colB:
+                mic_wav = st.file_uploader("🎙️ Speak your answer (WAV 16k mono)", type=["wav"])
+                if mic_wav is not None:
+                    with tempfile.TemporaryDirectory() as td:
+                        rec_path = os.path.join(td, "user.wav")
+                        with open(rec_path, "wb") as f:
+                            f.write(mic_wav.read())
+                        transcript = stt_transcribe_wav(rec_path, st.session_state.vosk_path)
+                        st.session_state["prefill_answer"] = transcript
+
+        default_ans = st.session_state.pop("prefill_answer", "") if "prefill_answer" in st.session_state else ""
         st.markdown(st.session_state.turn)
 
         with st.form("answer"):
-            ans = st.text_input("Your answer")
+            ans = st.text_input("Your answer", value=default_ans)
             submitted = st.form_submit_button("Submit")
         if submitted and ans.strip():
             ok, msg = check_user_input(ans)
@@ -149,14 +189,9 @@ with tab_learn:
             correct = bool(res["correct"])
             earned = update_progress(db, st.session_state.learner, skill, correct)
 
-            # badge notification
             if earned:
-                try:
-                    st.toast("🎖️ Badge unlocked: " + ", ".join(earned), icon="🎉")
-                except Exception:
-                    st.success("🎖️ Badge unlocked: " + ", ".join(earned))
+                st.success("🎖️ Badge unlocked: " + ", ".join(earned))
 
-            # next question (continue the conversation)
             st.session_state.turn = res["next_question"]
             st.rerun()
 
@@ -172,7 +207,7 @@ with tab_progress:
         c3.metric("Accuracy", acc)
 
         st.subheader("Mastered/Practicing skills")
-        st.write(f"{stats['mastered']} skill(s) at Practicing/Mastered status")
+        st.write(f"{stats['mastered']} skill(s) mastered or practicing")
 
         st.subheader("Badges")
         if not stats["badges"]:

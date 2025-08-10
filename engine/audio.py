@@ -55,7 +55,7 @@ def _tts():
         _tts_engine.setProperty("rate", 180)
     return _tts_engine
 
-def _tts_save_wav(text: str, out_path: str):
+def tts_save_wav(text: str, out_path: str):
     eng = _tts()
     eng.save_to_file(text, out_path)
     eng.runAndWait()
