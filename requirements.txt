@@ -2,3 +2,6 @@ streamlit
 sqlalchemy
 pydantic
 sentencepiece
+vosk
+soundfile
+pyttsx3
