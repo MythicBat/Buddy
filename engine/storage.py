@@ -92,7 +92,7 @@ class DB:
                 status=excluded.status,
                 streak_correct=excluded.streak_correct,
                 last_seen=excluded.last_seen
-            """, (learner_id, skill_id, status, streak, int(time=time()))
+            """, (learner_id, skill_id, status, streak, int(time.time()))
         )
         self.conn.commit()
     
@@ -114,7 +114,7 @@ class DB:
         import time, json
         self.conn.execute(
             "INSERT INTO events(learner_id, skill_id, kind, data, created_at) VALUES(?,?,?,?)",
-            (learner_id, skill_id, kind, data_json, int(time=time()))
+            (learner_id, skill_id, kind, data_json, int(time.time()))
         )
         self.conn.commit()
     
@@ -142,7 +142,7 @@ class DB:
         if cur: return False
         self.conn.execute(
             "INSERT INTO learner_badges(learner_id, badge_code, earned_at) VALUES(?,?,?)",
-            (learner_id, code, int(time=time()))
+            (learner_id, code, int(time.time()))
         )
         self.conn.commit()
         return True
