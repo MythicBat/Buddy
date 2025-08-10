@@ -5,3 +5,4 @@ sentencepiece
 vosk
 soundfile
 pyttsx3
+resampy
