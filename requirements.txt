@@ -6,3 +6,4 @@ vosk
 soundfile
 pyttsx3
 resampy
+streamlit-mic-recorder
