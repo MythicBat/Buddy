@@ -87,7 +87,7 @@ class DB:
         self.conn.execute(
             """
             INSERT INTO progress(learner_id, skill_id, status, streak_correct, last_seen)
-            VALUES(?,?,?,?)
+            VALUES(?,?,?,?,?)
             ON CONFLICT(learner_id, skill_id) DO UPDATE SET
                 status=excluded.status,
                 streak_correct=excluded.streak_correct,
