@@ -24,6 +24,22 @@ class DB:
                                 streak_correct INT,
                                 last_seen INT,
                                 PRIMARY KEY(learner_id, skill_id));
+        CREATE TABLE IF NOT EXISTS events(
+                                id INTEGER PRIMATY KEY,
+                                learner_id INT, skill_id INT,
+                                kind TEXT,
+                                data TEXT,
+                                created_at INTEGER);
+        CREATE TABLE IF NOT EXISTS badges(
+                                id INTEGER PRIMARY KEY,
+                                code TEXT UNIQUE,
+                                name TEXT,
+                                description TEXT);
+        CREATE TABLE IF NOT EXISTS learner_badges(
+                                learner_id INT,
+                                badge_code TEXT,
+                                earned_at INTEGER,
+                                PRIMARY KEY(learner_id, badge_code));
                                 """)
         self.conn.commit()
     
@@ -93,3 +109,74 @@ class DB:
             (subject, topic, subtopic)
         )
         self.conn.commit()
+    
+    def log_event(self, learner_id, skill_id, kind, data_json="{}"):
+        import time, json
+        self.conn.execute(
+            "INSERT INTO events(learner_id, skill_id, kind, data, created_at) VALUES(?,?,?,?)",
+            (learner_id, skill_id, kind, data_json, int(time=time()))
+        )
+        self.conn.commit()
+    
+    def ensure_badges_seed(self):
+        rows = self.conn.execute("SELECT COUNT(*) FROM badges").fetchone()[0]
+        if rows: return
+        seed = [
+            ("FIRST_5", "First Five", "Answered 5 questions"),
+            ("STREAK_3", "On a Roll", "3 correct in a row"),
+            ("MASTER_1", "Master I", "Mastered one skill"),
+        ]
+        for code, name, desc in seed:
+            self.conn.execute(
+                "INSERT INTO badges(code, name, description) VALUES(?,?,?)",
+                (code, name, desc)
+            )
+        self.conn.commit()
+    
+    def award_badge(self, learner_id, code):
+        import time
+        cur = self.conn.execute(
+            "SELECT 1 FROM learner_badges WHERE learner_id=? AND badge_code=?",
+            (learner_id, code)
+        ).fetchone()
+        if cur: return False
+        self.conn.execute(
+            "INSERT INTO learner_badges(learner_id, badge_code, earned_at) VALUES(?,?,?)",
+            (learner_id, code, int(time=time()))
+        )
+        self.conn.commit()
+        return True
+    
+    def learner_stats(self, learner_id):
+        total = self.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE learner_id=? AND kind='answer'",
+            (learner_id,)
+        ).fetchone()[0]
+        correct = self.conn.execute(
+            "SELECT COUNT(*) FROM events WHERE learner_id=? AND kind='answer' AND json_extract(data, '$.correct')=1",
+            (learner_id,)
+        ).fetchone()[0]
+        mastered = self.conn.execute(
+            "SELECT COUNT(*) FROM progress WHERE learner_id=? AND status='Practicing'",
+            (learner_id,)
+        ).fetchone()[0]
+        badges = self.conn.execute(
+            "SELECT b.code, b.name, b.description, lb.earned_at FROM learner_badges lb JOIN badges b ON b.code=lb.badge_code WHERE learner_id=?",
+            (learner_id,)
+        ).fetchall()
+        return {"answered": total, "correct": correct, "mastered": mastered,
+                "badges": [{"code":r[0], "name":r[1], "desc":r[2], "ts":r[3]} for r in badges]}
+    
+    def streak_correct(self, learner_id):
+        # Last contiguous correct answers
+        cur = self.conn.execute("""
+            SELECT json_extract(data, '$.correct') FROM events
+            WHERE learner_id=? AND kind='answer'
+            ORDER BY id DESC LIMIT 20
+            """, (learner_id))
+        streak = 0
+        for (c,) in cur.fetchall():
+            if c == 1: streak += 1
+            else: break
+        return streak
+    
