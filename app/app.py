@@ -1,13 +1,12 @@
-import json
-import os
 from pathlib import Path
-import sys
-import tempfile
-import time
+import sys, os, tempfile, json, time
 ROOT = Path(__file__).resolve().parent.parent
-if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import streamlit as st
+from streamlit_mic_recorder import mic_recorder
+
 from engine.model import ask_llm, ask_llm_json
 from engine.storage import DB
 from engine.adapt import pick_next_skill, update_progress
@@ -64,7 +63,7 @@ def eval_answer(question, student_answer, level, lang):
     )
     if "correct" not in j:
         j["correct"] = "correct" in str(j).lower()
-    j.setdefault("feedback", "Thanks! Here is some feedback and a small hint.")
+    j.setdefault("feedback", "Thanks! Here is a short explanation and a hint.")
     j.setdefault("next_question", "Try 4 + 3 = ?")
     return j
 
@@ -82,7 +81,7 @@ tab_learn, tab_progress, tab_teacher = st.tabs(["📘 Learn", "🎖️ Progress"
 
 # ======== LEARN TAB ========
 with tab_learn:
-    voice_mode = st.toggle("🎤 Voice mode (offline)", value=False)
+    voice_mode = st.toggle("🎤 Voice mode (offline)", value=False, help="Use TTS and mic recording with offline STT")
 
     # Setup form
     if "learner" not in st.session_state:
@@ -102,19 +101,23 @@ with tab_learn:
         st.write(f"**Q{st.session_state.diag_q + 1}:** {st.session_state.diag_q_text}")
 
         if voice_mode:
-            if st.button("🔊 Speak the question"):
-                with tempfile.TemporaryDirectory() as td:
-                    out_wav = os.path.join(td, "buddy_says.wav")
-                    tts_save_wav(st.session_state.diag_q_text, out_wav)
-                    st.audio(open(out_wav, "rb").read(), format="audio/wav")
-            mic_wav = st.file_uploader("🎙️ Speak your answer (WAV 16k mono)", type=["wav"])
-            if mic_wav is not None:
-                with tempfile.TemporaryDirectory() as td:
-                    rec_path = os.path.join(td, "user.wav")
-                    with open(rec_path, "wb") as f:
-                        f.write(mic_wav.read())
-                    transcript = stt_transcribe_wav(rec_path, st.session_state.vosk_path)
-                    st.session_state["prefill_answer"] = transcript
+            cols = st.columns(2)
+            with cols[0]:
+                if st.button("🔊 Speak the question"):
+                    with tempfile.TemporaryDirectory() as td:
+                        out_wav = os.path.join(td, "buddy_says.wav")
+                        tts_save_wav(st.session_state.diag_q_text, out_wav)
+                        st.audio(open(out_wav, "rb").read(), format="audio/wav")
+            with cols[1]:
+                audio = mic_recorder(start_prompt="🎙️ Record answer", stop_prompt="⏹️ Stop", just_once=True, key="diag_mic")
+                if audio and audio.get("bytes"):
+                    with tempfile.TemporaryDirectory() as td:
+                        rec_path = os.path.join(td, "user.wav")
+                        with open(rec_path, "wb") as f:
+                            f.write(audio["bytes"])
+                        transcript = stt_transcribe_wav(rec_path, st.session_state.vosk_path)
+                        st.session_state["prefill_answer"] = transcript
+                        st.info(f"Transcribed: **{transcript}**")
 
         default_ans = st.session_state.pop("prefill_answer", "") if "prefill_answer" in st.session_state else ""
         with st.form("diag"):
@@ -170,14 +173,15 @@ with tab_learn:
                         tts_save_wav(st.session_state.turn, out_wav)
                         st.audio(open(out_wav, "rb").read(), format="audio/wav")
             with colB:
-                mic_wav = st.file_uploader("🎙️ Speak your answer (WAV 16k mono)", type=["wav"])
-                if mic_wav is not None:
+                audio = mic_recorder(start_prompt="🎙️ Record answer", stop_prompt="⏹️ Stop", just_once=True, key="lesson_mic")
+                if audio and audio.get("bytes"):
                     with tempfile.TemporaryDirectory() as td:
                         rec_path = os.path.join(td, "user.wav")
                         with open(rec_path, "wb") as f:
-                            f.write(mic_wav.read())
+                            f.write(audio["bytes"])
                         transcript = stt_transcribe_wav(rec_path, st.session_state.vosk_path)
                         st.session_state["prefill_answer"] = transcript
+                        st.info(f"Transcribed: **{transcript}**")
 
         st.markdown(st.session_state.turn)
 
