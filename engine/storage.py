@@ -180,3 +180,21 @@ class DB:
             else: break
         return streak
     
+    def list_skills(self, subject: str):
+        cur = self.conn.execute(
+            "SELECT id, topic, subtopic FROM skills WHERE subject=? ORDER BY topic, subtopic",
+            (subject,)
+        )
+        return [{"id":r[0], "topic":r[1], "subtopic":r[2]} for r in cur.fetchall()]
+    
+    def delete_skills(self, skill_id: int):
+        self.conn.execute("DELETE FROM skills WHERE id=?", (skill_id,))
+        self.conn.commit()
+    
+    def export_pack(self, subject: str) -> dict:
+        skills = self.list_skills(subject)
+        return {
+            "subject": subject,
+            "version": "v1",
+            "skills": [{"topic": s["topic"], "subtopic": s["subtopic"]} for s in skills]
+        }
